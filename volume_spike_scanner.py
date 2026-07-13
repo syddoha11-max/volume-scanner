@@ -28,7 +28,7 @@ import requests
 QUOTE_ASSET       = "USDT"     # only scan pairs quoted in this asset
 MIN_24H_QUOTE_VOL = 1_000_000  # ignore coins with < $1M 24h volume (illiquid noise)
 MIN_1H_QUOTE_VOL  = 150_000    # the spike hour must have real money in it
-SPIKE_RATIO       = 3.0        # alert when 1h volume >= 3x the average hourly volume
+SPIKE_RATIO       = 1.1        # alert when 1h volume >= 3x the average hourly volume
 STRONG_RATIO      = 5.0        # mark as STRONG at/above this
 COOLDOWN_HOURS    = 3.0        # don't re-alert the same coin within this many hours
 
