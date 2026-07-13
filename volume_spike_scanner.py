@@ -47,7 +47,7 @@ LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
 WATCHLIST: set[str] = set()
 
 STATE_FILE = "state.json"      # remembers last-alert times to enforce the cooldown
-BINANCE = "https://api.binance.com"
+BINANCE = "https://data-api.binance.vision"
 HTTP_TIMEOUT = 20
 # ------------------------------------------------------------------------
 
