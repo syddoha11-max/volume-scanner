@@ -1,1 +1,45 @@
+name: momentum-continuation-scan
 
+on:
+  schedule:
+    - cron: "17 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repo-state-commit
+  cancel-in-progress: false
+
+jobs:
+  momentum:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Run momentum scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          EMAIL_SMTP_HOST:    ${{ secrets.EMAIL_SMTP_HOST }}
+          EMAIL_SMTP_PORT:    ${{ secrets.EMAIL_SMTP_PORT }}
+          EMAIL_USER:         ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS:         ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:           ${{ secrets.EMAIL_TO }}
+        run: python momentum_continuation.py
+      - name: Persist momentum state
+        run: |
+          if [ -n "$(git status --porcelain state_momentum.json)" ]; then
+            git config user.name  "vol-scanner-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git pull --rebase --autostash || true
+            git add state_momentum.json
+            git commit -m "update momentum state [skip ci]"
+            git push || true
+          else
+            echo "no state change"
+          fi
