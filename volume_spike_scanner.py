@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
-Binance volume-spike scanner.
+Binance volume-spike scanner (15-minute window).
 
-Checks every liquid Binance USDT spot pair and alerts (Telegram + email) when a
-coin's most recent 1-hour trading volume is running well above its own recent
-average hourly volume -- i.e. a sudden volume spike. New listings are picked up
-automatically because the scanner reads the live symbol list each run.
+Alerts (Telegram + email) when a coin's most recent 15-MINUTE trading volume is
+running well above its own recent average 15-min volume -- i.e. a fresh surge,
+caught early rather than after a full hour. New listings are picked up
+automatically. Reads Binance PUBLIC data only; never touches your account.
+Secrets come from environment variables (GitHub Actions secrets).
 
-Nothing here touches your exchange account. It only reads Binance PUBLIC market
-data. All secrets are read from environment variables (set as GitHub Actions
-secrets) -- none are stored in this file.
-
-Signal:  ratio = (quote volume in last 1h) / (24h quote volume / 24)
-         ratio >= SPIKE_RATIO  -> alert;  ratio >= STRONG_RATIO -> flagged STRONG
+Signal:  ratio = (quote volume in last 15m) / (24h quote volume / 96)
+         96 = number of 15-min blocks in a day.
 """
 
 import os
@@ -25,30 +22,26 @@ from urllib.parse import quote as urlquote
 import requests
 
 # ------------------------- CONFIG (tweak freely) -------------------------
-QUOTE_ASSET       = "USDT"     # only scan pairs quoted in this asset
-MIN_24H_QUOTE_VOL = 1_000_000  # ignore coins with < $1M 24h volume (illiquid noise)
-MIN_1H_QUOTE_VOL  = 150_000    # the spike hour must have real money in it
-SPIKE_RATIO       = 3.0        # alert when 1h volume >= 3x the average hourly volume
-STRONG_RATIO      = 5.0        # mark as STRONG at/above this
-COOLDOWN_HOURS    = 3.0        # don't re-alert the same coin within this many hours
+QUOTE_ASSET       = "USDT"
+WINDOW            = "15m"       # Binance rolling window: "5m","15m","30m","1h"
+WINDOW_MINUTES    = 15          # must match WINDOW (5, 15, 30, or 60)
+MIN_24H_QUOTE_VOL = 1_000_000   # ignore coins with < $1M 24h volume (illiquid)
+MIN_WIN_QUOTE_VOL = 40_000      # the spike window must have real money in it
+SPIKE_RATIO       = 3.0         # alert when window volume >= 3x its average
+STRONG_RATIO      = 5.0         # mark as STRONG at/above this
+COOLDOWN_HOURS    = 2.0         # don't re-alert the same coin within this many hours
 
-# Skip the mega-caps so alerts skew toward newer / smaller coins (the interesting ones).
-# Delete names from this set if you DO want to be alerted on them.
 EXCLUDE_BASES = {
     "BTC", "ETH", "BNB", "SOL", "XRP", "USDC", "FDUSD", "TUSD", "DAI",
     "STETH", "WBETH", "WBTC",
 }
-# Also skip Binance leveraged tokens (e.g. BTCUP, ETHDOWN). Detected precisely
-# below so real coins like JUP/PUMP that merely END in "UP" are NOT dropped.
 LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
+WATCHLIST: set[str] = set()     # empty = scan the whole market
 
-# If you'd rather watch ONLY a fixed list instead of the whole market, put base
-# symbols here, e.g. WATCHLIST = {"ENA", "WIF", "PENGU"}.  Empty = scan everything.
-WATCHLIST: set[str] = set()
-
-STATE_FILE = "state.json"      # remembers last-alert times to enforce the cooldown
-BINANCE = "https://data-api.binance.vision"
+STATE_FILE = "state.json"
+BINANCE = "https://data-api.binance.vision"   # public data host (no US geo-block)
 HTTP_TIMEOUT = 20
+PERIODS_PER_DAY = 1440 / WINDOW_MINUTES
 # ------------------------------------------------------------------------
 
 
@@ -57,7 +50,7 @@ def log(msg: str) -> None:
 
 
 def get_json(url: str):
-    r = requests.get(url, timeout=HTTP_TIMEOUT, headers={"User-Agent": "vol-scanner/1.0"})
+    r = requests.get(url, timeout=HTTP_TIMEOUT, headers={"User-Agent": "vol-scanner/2.0"})
     r.raise_for_status()
     return r.json()
 
@@ -79,31 +72,25 @@ def save_state(state: dict) -> None:
 
 
 def fetch_24h_all() -> dict:
-    """All symbols' 24h stats in one call. Returns {symbol: row}."""
-    data = get_json(f"{BINANCE}/api/v3/ticker/24hr")
-    return {row["symbol"]: row for row in data}
+    return {row["symbol"]: row for row in get_json(f"{BINANCE}/api/v3/ticker/24hr")}
 
 
-def fetch_1h_batch(symbols: list[str]) -> dict:
-    """Rolling 1h stats for up to 100 symbols per call. Returns {symbol: row}."""
+def fetch_window_batch(symbols: list[str]) -> dict:
     out = {}
     for i in range(0, len(symbols), 100):
         chunk = symbols[i:i + 100]
         arr = json.dumps(chunk, separators=(",", ":"))
-        url = f"{BINANCE}/api/v3/ticker?windowSize=1h&symbols={urlquote(arr)}"
+        url = f"{BINANCE}/api/v3/ticker?windowSize={WINDOW}&symbols={urlquote(arr)}"
         try:
             for row in get_json(url):
                 out[row["symbol"]] = row
         except Exception as e:
-            log(f"warn: 1h batch failed ({len(chunk)} symbols): {e}")
-        time.sleep(0.3)  # be gentle on rate limits
+            log(f"warn: {WINDOW} batch failed ({len(chunk)} symbols): {e}")
+        time.sleep(0.3)
     return out
 
 
 def is_leveraged(base: str, known_bases: set[str]) -> bool:
-    """True only for real leveraged tokens like BTCUP/ETHDOWN: the part before
-    the UP/DOWN/BULL/BEAR suffix must itself be a traded asset. So JUP ('J'+UP)
-    is NOT leveraged, but BTCUP ('BTC'+UP) is."""
     for suf in LEVERAGED_SUFFIXES:
         if base.endswith(suf) and base[: -len(suf)] in known_bases:
             return True
@@ -111,9 +98,7 @@ def is_leveraged(base: str, known_bases: set[str]) -> bool:
 
 
 def candidate_symbols(t24: dict) -> list[str]:
-    known_bases = {
-        s[: -len(QUOTE_ASSET)] for s in t24 if s.endswith(QUOTE_ASSET)
-    }
+    known_bases = {s[: -len(QUOTE_ASSET)] for s in t24 if s.endswith(QUOTE_ASSET)}
     syms = []
     for sym, row in t24.items():
         if not sym.endswith(QUOTE_ASSET):
@@ -161,11 +146,11 @@ def send_telegram(text: str) -> None:
 
 
 def send_email(subject: str, body: str) -> None:
-    host = os.environ.get("EMAIL_SMTP_HOST")
-    port = os.environ.get("EMAIL_SMTP_PORT")
-    user = os.environ.get("EMAIL_USER")
-    pw   = os.environ.get("EMAIL_PASS")
-    to   = os.environ.get("EMAIL_TO") or user
+    host = os.environ.get("EMAIL_SMTP_HOST", "").strip()
+    port = os.environ.get("EMAIL_SMTP_PORT", "").strip()
+    user = os.environ.get("EMAIL_USER", "").strip()
+    pw   = os.environ.get("EMAIL_PASS", "").strip()
+    to   = os.environ.get("EMAIL_TO", "").strip() or user
     if not all([host, port, user, pw]):
         log("email: not configured, skipping")
         return
@@ -186,7 +171,6 @@ def send_email(subject: str, body: str) -> None:
 def main() -> None:
     now = time.time()
     state = load_state()
-
     try:
         t24 = fetch_24h_all()
     except Exception as e:
@@ -194,63 +178,60 @@ def main() -> None:
         return
 
     cands = candidate_symbols(t24)
-    log(f"scanning {len(cands)} liquid {QUOTE_ASSET} pairs")
+    log(f"scanning {len(cands)} liquid {QUOTE_ASSET} pairs ({WINDOW} window)")
     if not cands:
-        log("no candidates; done")
         return
 
-    t1h = fetch_1h_batch(cands)
+    twin = fetch_window_batch(cands)
 
     spikes = []
     for sym in cands:
         r24 = t24.get(sym)
-        r1 = t1h.get(sym)
-        if not r24 or not r1:
+        rw = twin.get(sym)
+        if not r24 or not rw:
             continue
         try:
             qv24 = float(r24["quoteVolume"])
-            qv1  = float(r1["quoteVolume"])
+            qvw = float(rw["quoteVolume"])
         except (KeyError, TypeError, ValueError):
             continue
-        if qv1 < MIN_1H_QUOTE_VOL or qv24 <= 0:
+        if qvw < MIN_WIN_QUOTE_VOL or qv24 <= 0:
             continue
-        avg_hourly = qv24 / 24.0
-        if avg_hourly <= 0:
+        avg_win = qv24 / PERIODS_PER_DAY
+        if avg_win <= 0:
             continue
-        ratio = qv1 / avg_hourly
+        ratio = qvw / avg_win
         if ratio < SPIKE_RATIO:
             continue
-        # cooldown: skip if we alerted this coin recently
-        last = state.get(sym, 0)
-        if now - last < COOLDOWN_HOURS * 3600:
+        if now - state.get(sym, 0) < COOLDOWN_HOURS * 3600:
             continue
         spikes.append({
-            "sym": sym,
-            "base": sym[: -len(QUOTE_ASSET)],
-            "ratio": ratio,
-            "qv1": qv1,
-            "pc1": float(r1.get("priceChangePercent", 0) or 0),
+            "base": sym[: -len(QUOTE_ASSET)], "sym": sym, "ratio": ratio, "qvw": qvw,
+            "pcw": float(rw.get("priceChangePercent", 0) or 0),
             "pc24": float(r24.get("priceChangePercent", 0) or 0),
             "last": float(r24.get("lastPrice", 0) or 0),
             "strong": ratio >= STRONG_RATIO,
         })
 
     spikes.sort(key=lambda x: x["ratio"], reverse=True)
-
     if not spikes:
         log("no volume spikes this run")
         save_state(state)
         return
 
-    lines = ["\U0001F514 Binance volume spikes (newer/small-caps)"]
-    for s in spikes:
+    MAX_ALERTS = 15
+    shown = spikes[:MAX_ALERTS]
+    lines = [f"\U0001F514 Volume spikes ({WINDOW}, newer/small-caps)"]
+    for s in shown:
         tag = "⚡ STRONG " if s["strong"] else ""
         lines.append(
-            f"{tag}{s['base']} — {s['ratio']:.1f}x normal hourly vol | "
-            f"1h vol {human(s['qv1'])} | 1h {s['pc1']:+.1f}% | "
+            f"{tag}{s['base']} — {s['ratio']:.1f}x normal {WINDOW} vol | "
+            f"{WINDOW} vol {human(s['qvw'])} | {WINDOW} {s['pcw']:+.1f}% | "
             f"last ${s['last']:.6g} | 24h {s['pc24']:+.1f}%"
         )
         state[s["sym"]] = now
+    if len(spikes) > MAX_ALERTS:
+        lines.append(f"...and {len(spikes) - MAX_ALERTS} more")
     lines.append("Info only — your call whether to trade; not financial advice.")
     text = "\n".join(lines)
 
