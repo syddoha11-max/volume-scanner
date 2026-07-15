@@ -1,5 +1,4 @@
 name: momentum-continuation-scan
-
 on:
   schedule:
     - cron: "17 */4 * * *"
