@@ -53,6 +53,23 @@ def log(msg: str) -> None:
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}Z] {msg}", flush=True)
 
 
+def session_tag() -> str:
+    """Label the current UTC time by market session / liquidity (times are UTC)."""
+    t = time.gmtime()
+    h = t.tm_hour + t.tm_min / 60.0
+    if 12.0 <= h < 14.5:
+        return "🇺🇸 US open/data window — peak liquidity"
+    if 14.5 <= h < 21.0:
+        return "🇺🇸 US session — high liquidity"
+    if 7.0 <= h < 12.0:
+        return "🇪🇺 London/EU session — good liquidity"
+    if 0.0 <= h < 2.0:
+        return "🌏 Asia open + daily close/funding — active"
+    if 2.0 <= h < 7.0:
+        return "🌏 Asian session — moderate liquidity"
+    return "🌙 Off-hours — thin liquidity, watch for fakeouts"
+
+
 def get_json(url: str):
     r = requests.get(url, timeout=HTTP_TIMEOUT, headers={"User-Agent": "breakout/1.0"})
     r.raise_for_status()
@@ -242,6 +259,7 @@ def main() -> None:
             f"last ${h['price']:.6g}"
         )
         state[h["sym"]] = now
+    lines.append(f"Session: {session_tag()}")
     lines.append("Fresh breakout = watch for a hold/retest. Info only, not advice.")
     text = "\n".join(lines)
 
