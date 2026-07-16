@@ -1,13 +1,13 @@
 name: volume-spike-scan
 on:
   schedule:
-    - cron: "*/15 * * * *"   # fallback only; the cron service drives the real frequency
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 concurrency:
-  group: volume-scan          # its own group so fast triggers don't queue behind other scanners
-  cancel-in-progress: true    # a new trigger replaces a still-running one -> always freshest
+  group: volume-scan
+  cancel-in-progress: false
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -17,6 +17,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests
+      - name: Restore spike memory (cache)
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: volscan-state-${{ github.run_id }}
+          restore-keys: |
+            volscan-state-
       - name: Run scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -27,10 +34,9 @@ jobs:
           EMAIL_PASS:         ${{ secrets.EMAIL_PASS }}
           EMAIL_TO:           ${{ secrets.EMAIL_TO }}
         run: python volume_spike_scanner.py
-      - name: Persist alert-cooldown state
-        run: |
-          if [ -n "$(git status --porcelain state.json)" ]; then
-            git config user.name "vol-scanner-bot"; git config user.email "actions@users.noreply.github.com"
-            git pull --rebase --autostash || true
-            git add state.json; git commit -m "update alert state [skip ci]"; git push || true
-          else echo "no state change"; fi
+      - name: Save spike memory (cache)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: volscan-state-${{ github.run_id }}
