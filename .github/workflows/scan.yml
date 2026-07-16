@@ -1,17 +1,13 @@
 name: volume-spike-scan
-
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"   # fallback only; the cron service drives the real frequency
   workflow_dispatch:
-
 permissions:
   contents: write
-
 concurrency:
-  group: repo-state-commit
-  cancel-in-progress: false
-
+  group: volume-scan          # its own group so fast triggers don't queue behind other scanners
+  cancel-in-progress: true    # a new trigger replaces a still-running one -> always freshest
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -34,12 +30,7 @@ jobs:
       - name: Persist alert-cooldown state
         run: |
           if [ -n "$(git status --porcelain state.json)" ]; then
-            git config user.name  "vol-scanner-bot"
-            git config user.email "actions@users.noreply.github.com"
+            git config user.name "vol-scanner-bot"; git config user.email "actions@users.noreply.github.com"
             git pull --rebase --autostash || true
-            git add state.json
-            git commit -m "update alert state [skip ci]"
-            git push || true
-          else
-            echo "no state change"
-          fi
+            git add state.json; git commit -m "update alert state [skip ci]"; git push || true
+          else echo "no state change"; fi
