@@ -200,13 +200,13 @@ def main():
         for h in building_hits[:10]:
             e = h["entry"]; since = ((h["last"]/e["prev_price"] - 1) * 100) if e.get("prev_price") else 0
             lines.append(f"{h['base']} — now {h['ratio']:.1f}x (was {e.get('prev_ratio',0):.1f}x) | "
-                         f"price {since:+.1f}% since | 15m vol {human(h['qvw'])} | last ${h['last']:.6g}")
+                         f"price {since:+.1f}% since | {WINDOW} vol {human(h['qvw'])} | last ${h['last']:.6g}")
     if new_hits:
-        lines.append("🔔 New spikes (15m)")
+        lines.append(f"🔔 New spikes ({WINDOW})")
         for h in new_hits[:12]:
             tag = "⚡ STRONG " if h["strong"] else ""
-            lines.append(f"{tag}{h['base']} — {h['ratio']:.1f}x 15m vol | {human(h['qvw'])} | "
-                         f"15m {h['pcw']:+.1f}% | last ${h['last']:.6g} | 24h {h['pc24']:+.1f}%")
+            lines.append(f"{tag}{h['base']} — {h['ratio']:.1f}x {WINDOW} vol | {human(h['qvw'])} | "
+                         f"{WINDOW} {h['pcw']:+.1f}% | last ${h['last']:.6g} | 24h {h['pc24']:+.1f}%")
     lines.append(f"Session: {session_tag()}")
     lines.append("Info only — your call whether to trade; not financial advice.")
     text = "\n".join(lines)
