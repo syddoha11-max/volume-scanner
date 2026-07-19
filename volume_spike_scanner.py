@@ -26,6 +26,9 @@ MIN_24H_QUOTE_VOL = 500_000     # lowered to include more small-caps (raise to c
 MIN_WIN_QUOTE_VOL = 30_000      # the 5-min window must still have real money in it
 SPIKE_RATIO       = 4.0         # first-alert threshold (raise to 5-6 if too chatty)
 STRONG_RATIO      = 6.0         # tag first alerts as STRONG at/above this
+MIN_WIN_PRICE_CHG = 0.5         # NEW alerts also require price UP >= this % in the window,
+                                # so a volume spike that's a SELL-OFF/churn is skipped.
+                                # Set to 0 to alert on any direction; raise for stronger moves.
 ESCALATION_MULT   = 1.5         # a follow-up needs ratio >= 1.5x the last alert's ratio
 EPISODE_WINDOW_MIN = 45         # follow-ups only within this long after the first ping
 MAX_PER_EPISODE   = 3           # first ping + up to 2 "BUILDING" follow-ups
@@ -178,8 +181,13 @@ def main():
         ratio = qvw / avg
         if ratio < SPIKE_RATIO: continue
         price = float(r24.get("lastPrice", 0) or 0)
+        pcw = float(rw.get("priceChangePercent", 0) or 0)
         kind, entry = classify(ratio, price, state.get(sym), now)
         if kind is None:
+            continue
+        # price confirmation: a NEW spike must have price rising (not a sell-off/churn).
+        # BUILDING follow-ups already require a higher price, so they're exempt.
+        if kind == "new" and pcw < MIN_WIN_PRICE_CHG:
             continue
         rec = {"base": sym[:-len(QUOTE_ASSET)], "ratio": ratio, "qvw": qvw,
                "pcw": float(rw.get("priceChangePercent", 0) or 0),
